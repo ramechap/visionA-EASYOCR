@@ -4,6 +4,9 @@ import io
 import streamlit as st
 from PIL import Image, ImageDraw
 import easyocr
+import numpy as np
+
+
 
 
 # =========================================================
@@ -173,11 +176,15 @@ def draw_ocr_boxes(image, results):
 
 def perform_ocr(image):
     """
-    Run EasyOCR on the image.
+    Run EasyOCR on a PIL image.
+    EasyOCR expects a NumPy array, file path, URL, or bytes.
     """
 
+    # Convert PIL Image -> NumPy array
+    image_array = np.array(image)
+
     results = reader.readtext(
-        image,
+        image_array,
         detail=1,
         paragraph=False,
     )
@@ -185,7 +192,6 @@ def perform_ocr(image):
     extracted_results = []
 
     for result in results:
-
         box = result[0]
         text = result[1]
         confidence = float(result[2])
