@@ -1,13 +1,10 @@
 import json
 import io
-import cv2
+
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 import easyocr
-
-
-
 
 
 # =========================================================
@@ -19,7 +16,6 @@ st.set_page_config(
     page_icon="🔤",
     layout="wide",
 )
-
 
 st.title("🔤 EasyOCR Text Scanner")
 st.write(
@@ -64,15 +60,29 @@ confidence_threshold = st.sidebar.slider(
     "Minimum confidence",
     min_value=0.0,
     max_value=1.0,
-    value=0.30,
+    value=0.20,
     step=0.05,
+)
+
+
+upscale_factor = st.sidebar.selectbox(
+    "Image upscaling",
+    options=[1, 2, 3],
+    index=2,
+    help=(
+        "Upscaling can improve recognition of small text. "
+        "3x is useful for CVs and documents."
+    ),
 )
 
 
 use_gpu = st.sidebar.checkbox(
     "Use GPU",
     value=False,
-    help="Enable this only if your hosting environment has a compatible GPU.",
+    help=(
+        "Enable only if your hosting environment has "
+        "a compatible GPU."
+    ),
 )
 
 
@@ -84,35 +94,36 @@ use_gpu = st.sidebar.checkbox(
 def load_reader(languages, gpu):
     """
     Load EasyOCR once and cache it.
-
-    This prevents the OCR model from being loaded
-    every time the user clicks the OCR button.
     """
 
     return easyocr.Reader(
-        languages,
+        list(languages),
         gpu=gpu,
         verbose=False,
     )
 
 
 with st.spinner("Loading EasyOCR model..."):
+
     try:
+
         reader = load_reader(
-            language_codes,
+            tuple(language_codes),
             use_gpu,
         )
 
     except Exception as e:
+
         st.error(
             "Could not load EasyOCR.\n\n"
             f"Error: {e}"
         )
+
         st.stop()
 
 
 # =========================================================
-# IMAGE PROCESSING
+# IMAGE PREPARATION
 # =========================================================
 
 def prepare_image(uploaded_file):
@@ -127,10 +138,46 @@ def prepare_image(uploaded_file):
     return image.convert("RGB")
 
 
-def draw_ocr_boxes(image, results):
+def preprocess_image(image, scale=3):
     """
-    Draw EasyOCR bounding boxes and confidence
-    values on the image.
+    Improve small-text recognition using PIL only.
+
+    No cv2 is required.
+    """
+
+    if scale > 1:
+
+        new_width = image.width * scale
+        new_height = image.height * scale
+
+        image = image.resize(
+            (new_width, new_height),
+            Image.Resampling.LANCZOS,
+        )
+
+    # Slight contrast improvement
+    image = ImageEnhance.Contrast(
+        image
+    ).enhance(1.15)
+
+    # Slight sharpness improvement
+    image = ImageEnhance.Sharpness(
+        image
+    ).enhance(1.25)
+
+    return image
+
+
+# =========================================================
+# DRAW OCR BOXES
+# =========================================================
+
+def draw_ocr_boxes(image, results, scale=1):
+    """
+    Draw EasyOCR bounding boxes on the original image.
+
+    Coordinates are converted back to the original
+    image size when upscaling was used.
     """
 
     output = image.copy()
@@ -143,27 +190,51 @@ def draw_ocr_boxes(image, results):
         text = item["text"]
         confidence = item["confidence"]
 
-        points = [
-            tuple(point)
-            for point in box
-        ]
+        # Convert processed-image coordinates
+        # back to original-image coordinates.
+        points = []
 
+        for point in box:
+
+            x = int(point[0] / scale)
+            y = int(point[1] / scale)
+
+            points.append(
+                (x, y)
+            )
+
+        if len(points) < 4:
+            continue
+
+        # Draw bounding box
         draw.line(
             points + [points[0]],
-            width=3,
+            width=2,
             fill="red",
         )
 
-        x = int(min(point[0] for point in points))
-        y = int(min(point[1] for point in points))
+        # Find top-left position
+        x = min(
+            point[0]
+            for point in points
+        )
+
+        y = min(
+            point[1]
+            for point in points
+        )
 
         label = (
             f"{text} "
             f"({confidence:.2f})"
         )
 
+        # Draw label
         draw.text(
-            (x, max(0, y - 20)),
+            (
+                x,
+                max(0, y - 18),
+            ),
             label,
             fill="red",
         )
@@ -177,25 +248,74 @@ def draw_ocr_boxes(image, results):
 
 def perform_ocr(image):
     """
-    Run EasyOCR on a PIL image.
-    No cv2 required in this function.
+    Run EasyOCR on the image.
+
+    The returned data contains only normal Python
+    types so it can safely be converted to JSON.
     """
 
-    image_array = np.array(image)
+    # -----------------------------------------------------
+    # PREPROCESS / UPSCALE
+    # -----------------------------------------------------
+
+    processed_image = preprocess_image(
+        image,
+        scale=upscale_factor,
+    )
+
+    # -----------------------------------------------------
+    # PIL -> NumPy
+    # -----------------------------------------------------
+
+    image_array = np.asarray(
+        processed_image
+    )
+
+    # -----------------------------------------------------
+    # EASY OCR
+    # -----------------------------------------------------
 
     results = reader.readtext(
         image_array,
         detail=1,
         paragraph=False,
+
+        # Helps with smaller text
+        mag_ratio=1.5,
+        canvas_size=4000,
+
+        # More sensitive text detection
+        text_threshold=0.4,
+        low_text=0.2,
+        link_threshold=0.2,
+
+        # Text grouping
+        width_ths=0.7,
+        height_ths=0.5,
     )
 
     extracted_results = []
 
+    # -----------------------------------------------------
+    # CONVERT EVERYTHING TO PYTHON TYPES
+    # -----------------------------------------------------
+
     for result in results:
 
-        box = result[0]
-        text = str(result[1]).strip()
-        confidence = float(result[2])
+        if len(result) < 3:
+            continue
+
+        raw_box = result[0]
+        raw_text = result[1]
+        raw_confidence = result[2]
+
+        text = str(
+            raw_text
+        ).strip()
+
+        confidence = float(
+            raw_confidence
+        )
 
         if not text:
             continue
@@ -203,14 +323,27 @@ def perform_ocr(image):
         if confidence < confidence_threshold:
             continue
 
-        # Convert ALL NumPy values to normal Python int
+        # -------------------------------------------------
+        # IMPORTANT:
+        # Convert NumPy int32/int64 values into normal
+        # Python int values.
+        # -------------------------------------------------
+
         safe_box = []
 
-        for point in box:
-            x = int(point[0])
-            y = int(point[1])
+        for point in raw_box:
 
-            safe_box.append([x, y])
+            x = int(
+                point[0]
+            )
+
+            y = int(
+                point[1]
+            )
+
+            safe_box.append(
+                [x, y]
+            )
 
         extracted_results.append(
             {
@@ -241,7 +374,8 @@ uploaded_file = st.file_uploader(
 if uploaded_file is None:
 
     st.info(
-        "Upload an image containing text to begin OCR."
+        "Upload an image containing text "
+        "to begin OCR."
     )
 
     st.stop()
@@ -275,7 +409,7 @@ st.subheader("📷 Original Image")
 st.image(
     image,
     caption=uploaded_file.name,
-    use_container_width=True,
+    width="stretch",
 )
 
 
@@ -298,9 +432,15 @@ if st.button(
                 image
             )
 
+            # Store results in session state
             st.session_state[
                 "ocr_results"
             ] = results
+
+            # Store image scale
+            st.session_state[
+                "ocr_scale"
+            ] = upscale_factor
 
         except Exception as e:
 
@@ -321,7 +461,16 @@ if "ocr_results" in st.session_state:
         "ocr_results"
     ]
 
+    result_scale = st.session_state.get(
+        "ocr_scale",
+        1,
+    )
+
     st.divider()
+
+    # -----------------------------------------------------
+    # NO TEXT
+    # -----------------------------------------------------
 
     if not results:
 
@@ -339,6 +488,17 @@ if "ocr_results" in st.session_state:
     extracted_text = "\n".join(
         item["text"]
         for item in results
+    )
+
+
+    # =====================================================
+    # CREATE BOXED IMAGE
+    # =====================================================
+
+    boxed_image = draw_ocr_boxes(
+        image,
+        results,
+        scale=result_scale,
     )
 
 
@@ -368,7 +528,7 @@ if "ocr_results" in st.session_state:
         st.text_area(
             "OCR Result",
             value=extracted_text,
-            height=350,
+            height=400,
         )
 
         st.metric(
@@ -387,17 +547,11 @@ if "ocr_results" in st.session_state:
             "📦 Text Detection"
         )
 
-        boxed_image = draw_ocr_boxes(
-            image,
-            results,
-        )
-
         st.image(
             boxed_image,
             caption="Detected text regions",
-            use_container_width=True,
+            width="stretch",
         )
-
 
         st.subheader(
             "Detected Text"
@@ -430,9 +584,9 @@ if "ocr_results" in st.session_state:
         )
 
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # TEXT DOWNLOAD
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         st.download_button(
             label="📄 Download TXT",
@@ -442,28 +596,43 @@ if "ocr_results" in st.session_state:
         )
 
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # JSON DOWNLOAD
-        # ---------------------------------------------
+        # -------------------------------------------------
+
+        # Create a completely JSON-safe copy.
+        #
+        # This is intentionally separate from `results`
+        # so NumPy values can never reach json.dumps().
 
         json_safe_results = []
 
         for item in results:
+
             safe_box = []
-        
+
             for point in item["box"]:
-                safe_box.append([
-                    int(point[0]),
-                    int(point[1]),
-                ])
-        
-            json_safe_results.append({
-                "box": safe_box,
-                "text": str(item["text"]),
-                "confidence": float(item["confidence"]),
-            })
-        
-        
+
+                safe_box.append(
+                    [
+                        int(point[0]),
+                        int(point[1]),
+                    ]
+                )
+
+            json_safe_results.append(
+                {
+                    "box": safe_box,
+                    "text": str(
+                        item["text"]
+                    ),
+                    "confidence": float(
+                        item["confidence"]
+                    ),
+                }
+            )
+
+
         json_data = json.dumps(
             json_safe_results,
             ensure_ascii=False,
@@ -479,9 +648,9 @@ if "ocr_results" in st.session_state:
         )
 
 
-        # ---------------------------------------------
+        # -------------------------------------------------
         # IMAGE DOWNLOAD
-        # ---------------------------------------------
+        # -------------------------------------------------
 
         image_buffer = io.BytesIO()
 
@@ -490,10 +659,39 @@ if "ocr_results" in st.session_state:
             format="PNG",
         )
 
+        image_buffer.seek(0)
+
 
         st.download_button(
             label="🖼️ Download Image With Boxes",
             data=image_buffer.getvalue(),
             file_name="ocr_boxes.png",
             mime="image/png",
+        )
+
+
+        # -------------------------------------------------
+        # OCR SUMMARY
+        # -------------------------------------------------
+
+        st.divider()
+
+        st.write(
+            f"**Detected text regions:** "
+            f"{len(results)}"
+        )
+
+        st.write(
+            f"**Languages:** "
+            f"{', '.join(selected_languages)}"
+        )
+
+        st.write(
+            f"**Minimum confidence:** "
+            f"{confidence_threshold:.0%}"
+        )
+
+        st.write(
+            f"**Image upscaling:** "
+            f"{upscale_factor}×"
         )
