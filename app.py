@@ -1,10 +1,11 @@
 import json
 import io
-
+import cv2
+import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw
 import easyocr
-import numpy as np
+
 
 
 
@@ -174,38 +175,112 @@ def draw_ocr_boxes(image, results):
 # OCR FUNCTION
 # =========================================================
 
-import numpy as np
-
 def perform_ocr(image):
     """
-    Run EasyOCR on a PIL image.
+    Improved EasyOCR for small text, documents and CVs.
     """
 
-    image_array = np.array(image)
+    # PIL -> NumPy
+    img = np.array(image)
+
+    # RGB -> BGR for OpenCV
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+    # -------------------------------------------------
+    # 1. UPSCALE
+    # -------------------------------------------------
+
+    scale = 3
+
+    enlarged = cv2.resize(
+        img,
+        None,
+        fx=scale,
+        fy=scale,
+        interpolation=cv2.INTER_CUBIC,
+    )
+
+    # -------------------------------------------------
+    # 2. GRAYSCALE
+    # -------------------------------------------------
+
+    gray = cv2.cvtColor(
+        enlarged,
+        cv2.COLOR_BGR2GRAY,
+    )
+
+    # -------------------------------------------------
+    # 3. CONTRAST ENHANCEMENT
+    # -------------------------------------------------
+
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8),
+    )
+
+    enhanced = clahe.apply(gray)
+
+    # -------------------------------------------------
+    # 4. LIGHT DENOISING
+    # -------------------------------------------------
+
+    enhanced = cv2.GaussianBlur(
+        enhanced,
+        (3, 3),
+        0,
+    )
+
+    # -------------------------------------------------
+    # 5. OCR
+    # -------------------------------------------------
 
     results = reader.readtext(
-        image_array,
+        enhanced,
         detail=1,
         paragraph=False,
+
+        # Important for small text
+        mag_ratio=1.5,
+        canvas_size=4000,
+
+        # More sensitive text detection
+        text_threshold=0.4,
+        low_text=0.2,
+        link_threshold=0.2,
+
+        # Better handling of small text
+        width_ths=0.7,
+        height_ths=0.5,
     )
 
     extracted_results = []
 
     for result in results:
+
         box = result[0]
-        text = result[1]
+        text = str(result[1]).strip()
         confidence = float(result[2])
+
+        if not text:
+            continue
 
         if confidence < confidence_threshold:
             continue
 
-        # Convert NumPy coordinates to normal Python lists
-        box = np.asarray(box).tolist()
+        # Convert coordinates back to original
+        # image scale.
+        box = [
+            [
+                int(point[0] / scale),
+                int(point[1] / scale),
+            ]
+            for point in box
+        ]
 
         extracted_results.append(
             {
                 "box": box,
-                "text": str(text),
+                "text": text,
                 "confidence": confidence,
             }
         )
