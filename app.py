@@ -174,13 +174,13 @@ def draw_ocr_boxes(image, results):
 # OCR FUNCTION
 # =========================================================
 
+import numpy as np
+
 def perform_ocr(image):
     """
     Run EasyOCR on a PIL image.
-    EasyOCR expects a NumPy array, file path, URL, or bytes.
     """
 
-    # Convert PIL Image -> NumPy array
     image_array = np.array(image)
 
     results = reader.readtext(
@@ -199,10 +199,13 @@ def perform_ocr(image):
         if confidence < confidence_threshold:
             continue
 
+        # Convert NumPy coordinates to normal Python lists
+        box = np.asarray(box).tolist()
+
         extracted_results.append(
             {
                 "box": box,
-                "text": text,
+                "text": str(text),
                 "confidence": confidence,
             }
         )
