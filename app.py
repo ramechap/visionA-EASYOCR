@@ -177,80 +177,16 @@ def draw_ocr_boxes(image, results):
 
 def perform_ocr(image):
     """
-    Improved EasyOCR for small text, documents and CVs.
+    Run EasyOCR on a PIL image.
+    No cv2 required in this function.
     """
 
-    # PIL -> NumPy
-    img = np.array(image)
-
-    # RGB -> BGR for OpenCV
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-    # -------------------------------------------------
-    # 1. UPSCALE
-    # -------------------------------------------------
-
-    scale = 3
-
-    enlarged = cv2.resize(
-        img,
-        None,
-        fx=scale,
-        fy=scale,
-        interpolation=cv2.INTER_CUBIC,
-    )
-
-    # -------------------------------------------------
-    # 2. GRAYSCALE
-    # -------------------------------------------------
-
-    gray = cv2.cvtColor(
-        enlarged,
-        cv2.COLOR_BGR2GRAY,
-    )
-
-    # -------------------------------------------------
-    # 3. CONTRAST ENHANCEMENT
-    # -------------------------------------------------
-
-    clahe = cv2.createCLAHE(
-        clipLimit=2.0,
-        tileGridSize=(8, 8),
-    )
-
-    enhanced = clahe.apply(gray)
-
-    # -------------------------------------------------
-    # 4. LIGHT DENOISING
-    # -------------------------------------------------
-
-    enhanced = cv2.GaussianBlur(
-        enhanced,
-        (3, 3),
-        0,
-    )
-
-    # -------------------------------------------------
-    # 5. OCR
-    # -------------------------------------------------
+    image_array = np.array(image)
 
     results = reader.readtext(
-        enhanced,
+        image_array,
         detail=1,
         paragraph=False,
-
-        # Important for small text
-        mag_ratio=1.5,
-        canvas_size=4000,
-
-        # More sensitive text detection
-        text_threshold=0.4,
-        low_text=0.2,
-        link_threshold=0.2,
-
-        # Better handling of small text
-        width_ths=0.7,
-        height_ths=0.5,
     )
 
     extracted_results = []
@@ -267,19 +203,18 @@ def perform_ocr(image):
         if confidence < confidence_threshold:
             continue
 
-        # Convert coordinates back to original
-        # image scale.
-        box = [
-            [
-                int(point[0] / scale),
-                int(point[1] / scale),
-            ]
-            for point in box
-        ]
+        # Convert ALL NumPy values to normal Python int
+        safe_box = []
+
+        for point in box:
+            x = int(point[0])
+            y = int(point[1])
+
+            safe_box.append([x, y])
 
         extracted_results.append(
             {
-                "box": box,
+                "box": safe_box,
                 "text": text,
                 "confidence": confidence,
             }
