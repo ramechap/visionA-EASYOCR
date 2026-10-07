@@ -446,8 +446,26 @@ if "ocr_results" in st.session_state:
         # JSON DOWNLOAD
         # ---------------------------------------------
 
+        json_safe_results = []
+
+        for item in results:
+            safe_box = []
+        
+            for point in item["box"]:
+                safe_box.append([
+                    int(point[0]),
+                    int(point[1]),
+                ])
+        
+            json_safe_results.append({
+                "box": safe_box,
+                "text": str(item["text"]),
+                "confidence": float(item["confidence"]),
+            })
+        
+        
         json_data = json.dumps(
-            results,
+            json_safe_results,
             ensure_ascii=False,
             indent=2,
         )
